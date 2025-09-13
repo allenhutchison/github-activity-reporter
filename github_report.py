@@ -486,7 +486,7 @@ def generate_report(token, start_date, end_date, repos, use_narrative=False, gem
         print(format_markdown_report(report_data))
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Generate a GitHub activity report.")
     parser.add_argument("--token", help="GitHub Personal Access Token (or set GITHUB_TOKEN env var).")
     parser.add_argument("--start-date", help="Start date in YYYY-MM-DD format (defaults to today).")
@@ -514,3 +514,6 @@ if __name__ == "__main__":
     generate_report(token, start_date, end_date, args.repos,
                    use_narrative=args.narrative,
                    gemini_model=args.gemini_model)
+
+if __name__ == "__main__":
+    main()
