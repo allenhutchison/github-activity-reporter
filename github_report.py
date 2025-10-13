@@ -12,13 +12,25 @@ import os
 import sys
 import json
 from datetime import datetime, date
-from github import Github
+from github import Github, Auth
 try:
     from google import genai
     GENAI_AVAILABLE = True
 except ImportError as e:
     GENAI_AVAILABLE = False
     GENAI_IMPORT_ERROR = str(e)
+
+try:
+    import github_oauth
+    OAUTH_AVAILABLE = True
+except ImportError:
+    OAUTH_AVAILABLE = False
+
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
 
 def run_search_for_repos(g, base_query, repos):
     """
@@ -65,12 +77,117 @@ def run_commit_search_for_repos(g, base_query, repos):
 
     return all_results
 
+def check_user_activity_in_date_range(pr, username, start_date, end_date, g):
+    """
+    Check if a user had any activity (comments or reviews) on a PR during a date range.
+    Returns True if the user had activity during the date range, False otherwise.
+    """
+    try:
+        repo_name = pr.repository.full_name
+        repo_obj = g.get_repo(repo_name)
+        pr_obj = repo_obj.get_pull(pr.number)
+
+        # Check PR review comments (part of code review)
+        try:
+            reviews = pr_obj.get_reviews()
+            for review in reviews:
+                if review.user and review.user.login == username:
+                    review_date = review.submitted_at.strftime('%Y-%m-%d')
+                    if start_date <= review_date <= end_date:
+                        return True
+        except Exception:
+            pass
+
+        # Check issue comments (general comments on the PR)
+        try:
+            comments = pr_obj.get_issue_comments()
+            for comment in comments:
+                if comment.user and comment.user.login == username:
+                    comment_date = comment.created_at.strftime('%Y-%m-%d')
+                    if start_date <= comment_date <= end_date:
+                        return True
+        except Exception:
+            pass
+
+        # Check review comments (comments on specific lines of code)
+        try:
+            review_comments = pr_obj.get_review_comments()
+            for comment in review_comments:
+                if comment.user and comment.user.login == username:
+                    comment_date = comment.created_at.strftime('%Y-%m-%d')
+                    if start_date <= comment_date <= end_date:
+                        return True
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    return False
+
+def check_issue_activity_in_date_range(issue, username, start_date, end_date):
+    """
+    Check if a user had any activity (comments, mentions, assignments) on an issue during a date range.
+    Returns a set of interaction types if the user had activity, empty set otherwise.
+    """
+    interactions = set()
+
+    try:
+        # Check comments
+        try:
+            comments = issue.get_comments()
+            for comment in comments:
+                if comment.user and comment.user.login == username:
+                    comment_date = comment.created_at.strftime('%Y-%m-%d')
+                    if start_date <= comment_date <= end_date:
+                        interactions.add("commented")
+                        break
+        except Exception:
+            pass
+
+        # Check if user was mentioned in comments during the date range
+        try:
+            comments = issue.get_comments()
+            for comment in comments:
+                comment_date = comment.created_at.strftime('%Y-%m-%d')
+                if start_date <= comment_date <= end_date:
+                    if f"@{username}" in comment.body:
+                        interactions.add("mentioned")
+                        break
+        except Exception:
+            pass
+
+        # Check assignment during date range
+        # Note: GitHub doesn't provide assignment timestamps, so we check if assigned
+        # and if the issue was updated during the range
+        try:
+            if issue.assignee and issue.assignee.login == username:
+                # If assigned, check if issue was updated during date range
+                updated_date = issue.updated_at.strftime('%Y-%m-%d')
+                if start_date <= updated_date <= end_date:
+                    interactions.add("assigned")
+            elif issue.assignees:
+                for assignee in issue.assignees:
+                    if assignee.login == username:
+                        updated_date = issue.updated_at.strftime('%Y-%m-%d')
+                        if start_date <= updated_date <= end_date:
+                            interactions.add("assigned")
+                        break
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    return interactions
+
 def collect_github_data(token, start_date, end_date, repos):
     """
     Collects GitHub activity data and returns it as structured data.
     """
     try:
-        g = Github(token)
+        auth = Auth.Token(token)
+        g = Github(auth=auth)
         user = g.get_user()
         username = user.login
     except Exception as e:
@@ -178,19 +295,27 @@ def collect_github_data(token, start_date, end_date, repos):
             report_data["contributions"]["commits"].extend(commit_list[:10])
 
     # Collect Pull Request Reviews
-    pr_reviewed = set()
+    # Use a broader search to get candidate PRs, then verify actual activity dates
+    pr_reviewed = {}
 
-    reviewed_prs = run_search_for_repos(g, f"is:pr commenter:{username} {updated_date_qualifier}", repos)
+    # Search for PRs where user commented (broad search without strict date filtering)
+    reviewed_prs = run_search_for_repos(g, f"is:pr commenter:{username}", repos)
     for pr in reviewed_prs:
         if pr.pull_request and pr.user.login != username:
-            pr_reviewed.add((pr.number, pr.html_url, pr.title, pr.state))
+            # Verify the user actually had activity during the date range
+            if check_user_activity_in_date_range(pr, username, start_date, end_date, g):
+                pr_reviewed[pr.number] = (pr.html_url, pr.title, pr.state)
 
-    reviewed_prs = run_search_for_repos(g, f"is:pr reviewed-by:{username} {updated_date_qualifier}", repos)
+    # Search for PRs where user did formal reviews
+    reviewed_prs = run_search_for_repos(g, f"is:pr reviewed-by:{username}", repos)
     for pr in reviewed_prs:
-        if pr.user.login != username:
-            pr_reviewed.add((pr.number, pr.html_url, pr.title, pr.state))
+        if pr.user.login != username and pr.number not in pr_reviewed:
+            # Verify the user actually had activity during the date range
+            if check_user_activity_in_date_range(pr, username, start_date, end_date, g):
+                pr_reviewed[pr.number] = (pr.html_url, pr.title, pr.state)
 
-    for number, url, title, state in pr_reviewed:
+    for number in pr_reviewed.keys():
+        url, title, state = pr_reviewed[number]
         report_data["maintainer_work"]["prs_reviewed"].append({
             "number": number,
             "url": url,
@@ -224,43 +349,38 @@ def collect_github_data(token, start_date, end_date, repos):
         })
 
     # Collect Issue Engagement
+    # Use a broader search to get candidate issues, then verify actual activity dates
     issues_engaged = {}
 
-    commented_issues = run_search_for_repos(g, f"is:issue commenter:{username} {updated_date_qualifier}", repos)
+    # Get all issues where user has commented, mentioned, or assigned
+    # Use broad search without strict date filtering
+    candidate_issues = set()
+
+    commented_issues = run_search_for_repos(g, f"is:issue commenter:{username}", repos)
     for issue in commented_issues:
         if issue.user.login != username:
-            if issue.number not in issues_engaged:
-                issues_engaged[issue.number] = {
-                    'url': issue.html_url,
-                    'title': issue.title,
-                    'state': issue.state,
-                    'interactions': set()
-                }
-            issues_engaged[issue.number]['interactions'].add("commented")
+            candidate_issues.add((issue.number, issue))
 
-    mentioned_issues = run_search_for_repos(g, f"is:issue mentions:{username} {updated_date_qualifier}", repos)
+    mentioned_issues = run_search_for_repos(g, f"is:issue mentions:{username}", repos)
     for issue in mentioned_issues:
         if issue.user.login != username:
-            if issue.number not in issues_engaged:
-                issues_engaged[issue.number] = {
-                    'url': issue.html_url,
-                    'title': issue.title,
-                    'state': issue.state,
-                    'interactions': set()
-                }
-            issues_engaged[issue.number]['interactions'].add("mentioned")
+            candidate_issues.add((issue.number, issue))
 
-    assigned_issues = run_search_for_repos(g, f"is:issue assignee:{username} {updated_date_qualifier}", repos)
+    assigned_issues = run_search_for_repos(g, f"is:issue assignee:{username}", repos)
     for issue in assigned_issues:
         if issue.user.login != username:
-            if issue.number not in issues_engaged:
-                issues_engaged[issue.number] = {
-                    'url': issue.html_url,
-                    'title': issue.title,
-                    'state': issue.state,
-                    'interactions': set()
-                }
-            issues_engaged[issue.number]['interactions'].add("assigned")
+            candidate_issues.add((issue.number, issue))
+
+    # Now check each candidate issue for actual activity during the date range
+    for number, issue in candidate_issues:
+        interactions = check_issue_activity_in_date_range(issue, username, start_date, end_date)
+        if interactions:
+            issues_engaged[number] = {
+                'url': issue.html_url,
+                'title': issue.title,
+                'state': issue.state,
+                'interactions': interactions
+            }
 
     for number, issue_data in issues_engaged.items():
         report_data["maintainer_work"]["issues_engaged"].append({
@@ -487,11 +607,28 @@ def generate_report(token, start_date, end_date, repos, use_narrative=False, gem
 
 
 def main():
+    # Load environment variables from .env file if available
+    if DOTENV_AVAILABLE:
+        load_dotenv()
+
     parser = argparse.ArgumentParser(description="Generate a GitHub activity report.")
-    parser.add_argument("--token", help="GitHub Personal Access Token (or set GITHUB_TOKEN env var).")
+
+    # Authentication options
+    auth_group = parser.add_argument_group('authentication')
+    auth_group.add_argument("--token", help="GitHub Personal Access Token (or set GITHUB_TOKEN env var).")
+    auth_group.add_argument("--use-oauth", action="store_true",
+                           help="Use OAuth authentication (will prompt for login if no saved token).")
+    auth_group.add_argument("--oauth-login", action="store_true",
+                           help="Force new OAuth login (re-authenticate even if token exists).")
+    auth_group.add_argument("--oauth-logout", action="store_true",
+                           help="Remove saved OAuth token and exit.")
+    auth_group.add_argument("--oauth-client-id",
+                           help="Custom GitHub OAuth app client ID (optional).")
+
+    # Report options
     parser.add_argument("--start-date", help="Start date in YYYY-MM-DD format (defaults to today).")
     parser.add_argument("--end-date", help="End date in YYYY-MM-DD format (defaults to today).")
-    parser.add_argument("--repos", nargs='+', required=True,
+    parser.add_argument("--repos", nargs='+',
                         help="A list of repositories (user/repo) or organizations (org) to include in the report.")
     parser.add_argument("--narrative", action="store_true",
                         help="Generate a human-readable narrative using Google's Gemini API (requires google-genai package).")
@@ -500,10 +637,65 @@ def main():
 
     args = parser.parse_args()
 
-    # Get token from args or environment variable
-    token = args.token or os.environ.get('GITHUB_TOKEN')
+    # Handle OAuth logout
+    if args.oauth_logout:
+        if not OAUTH_AVAILABLE:
+            print("Error: OAuth module not available. Install with: pip install requests")
+            sys.exit(1)
+        github_oauth.clear_token()
+        return
+
+    # Handle OAuth login
+    if args.oauth_login:
+        if not OAUTH_AVAILABLE:
+            print("Error: OAuth module not available. Install with: pip install requests")
+            sys.exit(1)
+        try:
+            github_oauth.get_or_create_token(
+                client_id=args.oauth_client_id,
+                force_new=True
+            )
+            print("✅ OAuth login successful! You can now run reports.\n")
+            return
+        except github_oauth.GitHubOAuthError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    # Require --repos for report generation
+    if not args.repos:
+        print("Error: --repos is required for generating reports.")
+        print("Use --oauth-login to authenticate or --oauth-logout to logout.")
+        sys.exit(1)
+
+    # Token resolution order:
+    # 1. Explicit --token flag (highest priority)
+    # 2. Saved OAuth token (if --use-oauth or no other token available)
+    # 3. GITHUB_TOKEN environment variable (fallback)
+    token = None
+
+    if args.token:
+        # Explicit token provided
+        token = args.token
+    elif args.use_oauth or (OAUTH_AVAILABLE and not os.environ.get('GITHUB_TOKEN')):
+        # Use OAuth if explicitly requested or if it's the only option
+        if not OAUTH_AVAILABLE:
+            print("Error: OAuth requested but module not available. Install with: pip install requests")
+            sys.exit(1)
+        try:
+            token = github_oauth.get_or_create_token(client_id=args.oauth_client_id)
+        except github_oauth.GitHubOAuthError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+    else:
+        # Fall back to environment variable
+        token = os.environ.get('GITHUB_TOKEN')
+
     if not token:
-        print("Error: GitHub token required. Pass --token or set GITHUB_TOKEN environment variable.")
+        print("Error: GitHub token required.")
+        print("\nAuthentication options:")
+        print("  1. Use OAuth: python github_report.py --use-oauth --repos ...")
+        print("  2. Set environment variable: export GITHUB_TOKEN='your_token'")
+        print("  3. Pass token directly: python github_report.py --token your_token --repos ...")
         sys.exit(1)
 
     # Default dates to today if not provided
