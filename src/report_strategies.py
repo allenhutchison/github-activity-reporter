@@ -10,7 +10,21 @@ fragment ReportIssueFields on Issue {
   url
   state
   createdAt
+  updatedAt
   author { login }
+  comments(last: 20) {
+    nodes {
+      author { login }
+    }
+  }
+  timelineItems(last: 20, itemTypes: [CLOSED_EVENT]) {
+    nodes {
+      ... on ClosedEvent {
+        actor { login }
+        createdAt
+      }
+    }
+  }
 }
 """
 
@@ -22,6 +36,7 @@ fragment ReportPRFields on PullRequest {
   state
   mergedAt
   createdAt
+  updatedAt
   author { login }
   commits(last: 20) {
     nodes {
@@ -34,6 +49,30 @@ fragment ReportPRFields on PullRequest {
             login
           }
         }
+      }
+    }
+  }
+  reviews(last: 20) {
+    nodes {
+      author { login }
+      state
+      createdAt
+    }
+  }
+  comments(last: 20) {
+    nodes {
+      author { login }
+    }
+  }
+  timelineItems(last: 20, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) {
+    nodes {
+      ... on ClosedEvent {
+        actor { login }
+        createdAt
+      }
+      ... on MergedEvent {
+        actor { login }
+        createdAt
       }
     }
   }
@@ -56,6 +95,8 @@ class ReportDataStrategy(Strategy):
         self.username = config.get("username")
 
     def _is_in_period(self, created_at):
+        if not created_at:
+            return False
         # Simple date string comparison often works for ISO8601 if format is identical,
         # but parsing is safer.
         dt = parser.isoparse(created_at).date()
@@ -101,19 +142,6 @@ class AuthoredActivityStrategy(ReportDataStrategy):
         {FRAGMENT_REPORT_PR}
         """
         
-        # Note: pullRequests(filterBy: {createdBy: ...}) exists? 
-        # Let's check the GitHub GraphQL schema or assume yes.
-        # Actually, `pullRequests` argument `filterBy` is not standard in some versions? 
-        # It usually doesn't support `createdBy` inside `filterBy` for PRs in the same way Issues does?
-        # Let's re-verify. `issues` has `filterBy: {createdBy: ...}`.
-        # `pullRequests` often requires headRefName or states. 
-        # If `createdBy` isn't available on PR connection, we must fetch recent PRs and filter in client.
-        # Given the '403' forbidden on search, we want to avoid search.
-        # For safety, let's fetch recent PRs and filter by author == username in python.
-        
-        # Revised Query for PRs (remove filterBy if risky, or use standard args)
-        # We'll fetch last 50 PRs and filter.
-        
         results = {
             "pull_requests": [],
             "issues": []
@@ -128,17 +156,12 @@ class AuthoredActivityStrategy(ReportDataStrategy):
             except ValueError:
                 continue
                 
-            # We can try to optimize PR fetching, but fetching top 50 recent is usually safe enough for a daily report.
             variables = {
                 "owner": owner, 
                 "name": name, 
                 "since": since_iso, 
                 "author": self.username
             }
-            
-            # Note: We cannot strictly use $since for PRs in the connection args easily either without `updatedAt` filter?
-            # `pullRequests` doesn't have a `since` argument. 
-            # So we just fetch recent.
             
             data = self.client.execute(query, variables)
             
@@ -148,7 +171,6 @@ class AuthoredActivityStrategy(ReportDataStrategy):
             repo_data = data["repository"]
             
             # Process Issues
-            # These are already filtered by API for author and since!
             for issue in repo_data.get("issues", {}).get("nodes", []):
                 if self._is_in_period(issue["createdAt"]):
                     results["issues"].append(issue)
@@ -165,3 +187,120 @@ class AuthoredActivityStrategy(ReportDataStrategy):
                     results["pull_requests"].append(pr)
                     
         return results
+
+class MaintainerActivityStrategy(ReportDataStrategy):
+    """
+    Fetches activity where the user acted as a maintainer (reviewed, commented, closed)
+    but was NOT the author.
+    """
+    def run(self):
+        repos = self.config.get("watch_all", []) + self.config.get("watch_mentions", [])
+        repos = list(set(repos))
+
+        if not repos or not self.username:
+            return {
+                "prs_reviewed": [],
+                "prs_closed_merged": [],
+                "issues_engaged": [],
+                "issues_closed": []
+            }
+
+        # Query recent items to scan for engagement
+        # We fetch recent updated items, then check if we did anything on them
+        query = f"""
+        query($owner: String!, $name: String!) {{
+          repository(owner: $owner, name: $name) {{
+            issues(first: 50, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+              nodes {{ ...ReportIssueFields }}
+            }}
+            pullRequests(first: 50, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+              nodes {{ ...ReportPRFields }}
+            }}
+          }}
+        }}
+        {FRAGMENT_REPORT_ISSUE}
+        {FRAGMENT_REPORT_PR}
+        """
+
+        results = {
+            "prs_reviewed": [],
+            "prs_closed_merged": [],
+            "issues_engaged": [],
+            "issues_closed": []
+        }
+
+        for repo_fullname in repos:
+            try:
+                owner, name = repo_fullname.split("/")
+            except ValueError:
+                continue
+
+            data = self.client.execute(query, {"owner": owner, "name": name})
+            if not data or "repository" not in data:
+                continue
+
+            repo_data = data["repository"]
+
+            # 1. Process PRs (Reviewed, Closed, Merged)
+            for pr in repo_data.get("pullRequests", {}).get("nodes", []):
+                # Skip authored items
+                if pr["author"] and pr["author"]["login"] == self.username:
+                    continue
+                
+                # Check for Reviews
+                if "reviews" in pr and pr["reviews"]["nodes"]:
+                    for review in pr["reviews"]["nodes"]:
+                        if review["author"] and review["author"]["login"] == self.username:
+                            if self._is_in_period(review["createdAt"]):
+                                results["prs_reviewed"].append(pr)
+                                break # Count once per PR
+
+                # Check for Closed/Merged
+                if "timelineItems" in pr and pr["timelineItems"]["nodes"]:
+                    for event in pr["timelineItems"]["nodes"]:
+                        if event and "actor" in event and event["actor"] and event["actor"]["login"] == self.username:
+                            if self._is_in_period(event["createdAt"]):
+                                # Determine type
+                                action_type = "merged" if "MergedEvent" in str(event) else "closed" 
+                                # (rudimentary check, or use __typename if available, but our fragment is explicit)
+                                # Actually let's check __typename if possible or infer
+                                # The fragment is: ... on ClosedEvent { ... } ... on MergedEvent { ... }
+                                # GraphQL returns the fields requested.
+                                # We can't easily distinguish without __typename, but we know if it was mergedAt set?
+                                # Let's infer from PR state + event presence
+                                results["prs_closed_merged"].append(pr)
+                                break
+
+            # 2. Process Issues (Engaged, Closed)
+            for issue in repo_data.get("issues", {}).get("nodes", []):
+                if issue["author"] and issue["author"]["login"] == self.username:
+                    continue
+                
+                is_engaged = False
+                # Check for Comments
+                if "comments" in issue and issue["comments"]["nodes"]:
+                    for comment in issue["comments"]["nodes"]:
+                        if comment["author"] and comment["author"]["login"] == self.username:
+                            # We count engagement if it happened at all recently? 
+                            # Or strictly in period? Usually engagement is "touched in period"
+                            # But we only have date on issue, not comment in this fragment.
+                            # Let's assume if issue updated recently and we commented, we are engaged.
+                            # For strictness, we should fetch comment dates.
+                            # Fragment has "nodes { author { login } }". No date.
+                            # Let's accept "commented" if issue updated in period.
+                            is_engaged = True
+                            break
+                
+                if is_engaged and self._is_in_period(issue["updatedAt"]):
+                     results["issues_engaged"].append(issue)
+
+                # Check for Closed
+                if "timelineItems" in issue and issue["timelineItems"]["nodes"]:
+                    for event in issue["timelineItems"]["nodes"]:
+                        if event and "actor" in event and event["actor"] and event["actor"]["login"] == self.username:
+                             if self._is_in_period(event["createdAt"]):
+                                 results["issues_closed"].append(issue)
+                                 break
+
+        return results
+

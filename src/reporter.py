@@ -2,7 +2,7 @@ import os
 import json
 from datetime import date
 from src.client import GitHubClient
-from src.report_strategies import AuthoredActivityStrategy
+from src.report_strategies import AuthoredActivityStrategy, MaintainerActivityStrategy
 
 try:
     from google import genai
@@ -31,8 +31,13 @@ def collect_data_graphql(token, start_date, end_date, repos):
             "watch_mentions": []
         }
         
-        strategy = AuthoredActivityStrategy(client, config, start_date, end_date)
-        data = strategy.run()
+        # 1. Authored Activity
+        auth_strategy = AuthoredActivityStrategy(client, config, start_date, end_date)
+        auth_data = auth_strategy.run()
+
+        # 2. Maintainer Activity
+        maint_strategy = MaintainerActivityStrategy(client, config, start_date, end_date)
+        maint_data = maint_strategy.run()
         
         # Initialize data structure
         report_data = {
@@ -52,8 +57,8 @@ def collect_data_graphql(token, start_date, end_date, repos):
             }
         }
         
-        # Process Pull Requests
-        for pr in data["pull_requests"]:
+        # Process Pull Requests (Authored)
+        for pr in auth_data["pull_requests"]:
             status = "open"
             if pr.get("mergedAt"):
                 status = "merged"
@@ -64,7 +69,6 @@ def collect_data_graphql(token, start_date, end_date, repos):
             if "commits" in pr and "nodes" in pr["commits"]:
                 for node in pr["commits"]["nodes"]:
                     c = node["commit"]
-                    # Check if author exists and matches (GraphQL might return null author for some bot commits etc)
                     if c.get("author") and c["author"].get("user") and c["author"]["user"]["login"] == username:
                         commits_list.append({
                             "sha": c["oid"][:7],
@@ -80,14 +84,50 @@ def collect_data_graphql(token, start_date, end_date, repos):
                 "commits": commits_list
             })
             
-        # Process Issues
-        for issue in data["issues"]:
+        # Process Issues (Authored)
+        for issue in auth_data["issues"]:
             status = "closed" if issue["state"] == "CLOSED" else "open"
             report_data["contributions"]["issues"].append({
                 "number": issue["number"],
                 "url": issue["url"],
                 "title": issue["title"],
                 "status": status
+            })
+
+        # Process Maintainer Work
+        for pr in maint_data["prs_reviewed"]:
+            report_data["maintainer_work"]["prs_reviewed"].append({
+                "number": pr["number"],
+                "url": pr["url"],
+                "title": pr["title"],
+                "state": "reviewed"
+            })
+            
+        for pr in maint_data["prs_closed_merged"]:
+            # Infer status from state if we can, or just say 'closed/merged'
+            status = "merged" if pr.get("mergedAt") else "closed"
+            report_data["maintainer_work"]["prs_closed_merged"].append({
+                "number": pr["number"],
+                "url": pr["url"],
+                "title": pr["title"],
+                "status": status
+            })
+
+        for issue in maint_data["issues_engaged"]:
+            report_data["maintainer_work"]["issues_engaged"].append({
+                "number": issue["number"],
+                "url": issue["url"],
+                "title": issue["title"],
+                "state": issue["state"].lower(),
+                "interactions": ["commented"] # Simplified for now
+            })
+
+        for issue in maint_data["issues_closed"]:
+            report_data["maintainer_work"]["issues_closed"].append({
+                "number": issue["number"],
+                "url": issue["url"],
+                "title": issue["title"],
+                "reason": "closed"
             })
             
         return report_data, None
