@@ -82,8 +82,19 @@ fragment ReportPRFields on PullRequest {
 class ReportDataStrategy(Strategy):
     """
     Base strategy for fetching report data.
+    
+    Provides helper methods for date filtering within a specific period.
     """
     def __init__(self, client, config, start_date, end_date):
+        """
+        Initialize the report strategy.
+
+        Args:
+            client (GitHubClient): The GitHub client.
+            config (dict): Configuration dictionary containing username and repos.
+            start_date (str|date): The start date of the report period.
+            end_date (str|date): The end date of the report period.
+        """
         # We don't strictly need 'last_run_at' for report, but the base Strategy might expect it.
         # However, the base Strategy signature is (client, config, last_run_at).
         # We'll bypass that or adapt. The base Strategy class in src/strategies.py is simple.
@@ -95,6 +106,15 @@ class ReportDataStrategy(Strategy):
         self.username = config.get("username")
 
     def _is_in_period(self, created_at):
+        """
+        Check if a given date string falls within the report period.
+        
+        Args:
+            created_at (str): ISO 8601 date string.
+            
+        Returns:
+            bool: True if the date is within the start_date and end_date (inclusive).
+        """
         if not created_at:
             return False
         # Simple date string comparison often works for ISO8601 if format is identical,
@@ -117,6 +137,12 @@ class AuthoredActivityStrategy(ReportDataStrategy):
     Fetches PRs and Issues authored by the user from watch_all and watch_mentions repos.
     """
     def run(self):
+        """
+        Execute the strategy to fetch authored items.
+
+        Returns:
+            dict: A dictionary containing 'pull_requests' and 'issues' lists.
+        """
         # Combine all repos we want to check
         repos = self.config.get("watch_all", []) + self.config.get("watch_mentions", [])
         repos = list(set(repos)) # unique
@@ -194,6 +220,13 @@ class MaintainerActivityStrategy(ReportDataStrategy):
     but was NOT the author.
     """
     def run(self):
+        """
+        Execute the strategy to fetch maintainer activity.
+
+        Returns:
+            dict: A dictionary containing lists for 'prs_reviewed', 'prs_closed_merged',
+                  'issues_engaged', and 'issues_closed'.
+        """
         repos = self.config.get("watch_all", []) + self.config.get("watch_mentions", [])
         repos = list(set(repos))
 

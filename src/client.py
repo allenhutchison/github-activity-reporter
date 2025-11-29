@@ -8,7 +8,18 @@ load_dotenv()
 GITHUB_GRAPHQL_URL = "https://api.github.com/graphql"
 
 class GitHubClient:
+    """
+    A client for interacting with the GitHub GraphQL API.
+    
+    This client handles authentication and executing GraphQL queries.
+    """
     def __init__(self):
+        """
+        Initialize the GitHub client.
+        
+        Loads the GITHUB_TOKEN from the environment.
+        Raises SystemExit if the token is missing.
+        """
         self.token = os.getenv("GITHUB_TOKEN")
         if not self.token:
             print("Error: GITHUB_TOKEN not found in environment or .env file.", file=sys.stderr)
@@ -21,7 +32,16 @@ class GitHubClient:
         }
 
     def execute(self, query, variables=None):
-        """Executes a GraphQL query against the GitHub API."""
+        """
+        Executes a GraphQL query against the GitHub API.
+
+        Args:
+            query (str): The GraphQL query string.
+            variables (dict, optional): A dictionary of variables for the query.
+
+        Returns:
+            dict: The 'data' part of the JSON response if successful, None otherwise.
+        """
         payload = {"query": query}
         if variables:
             payload["variables"] = variables

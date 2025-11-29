@@ -6,38 +6,46 @@ from dateutil import parser
 STATE_FILE = "state.json"
 
 class StateManager:
-    def __init__(self, filepath=STATE_FILE):
-        self.filepath = filepath
-        self.state = self._load_state()
+    """
+    Manages the application state, specifically tracking the last run time.
+    
+    State is persisted to a JSON file in the user's home directory.
+    """
+    def __init__(self, state_file="~/.github_inbox_state.json"):
+        """
+        Initialize the StateManager.
 
-    def _load_state(self):
-        if not os.path.exists(self.filepath):
-            return {}
-        try:
-            with open(self.filepath, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return {}
+        Args:
+            state_file (str): Path to the state file. Defaults to ~/.github_inbox_state.json.
+        """
+        self.state_file = os.path.expanduser(state_file)
 
     def get_last_run(self):
         """
-        Returns the last run timestamp as an ISO 8601 string.
-        Defaults to 24 hours ago if no state exists.
+        Retrieve the timestamp of the last successful run.
+
+        If no state file exists, returns a timestamp for 24 hours ago.
+
+        Returns:
+            str: ISO 8601 formatted timestamp string.
         """
-        last_run = self.state.get("last_run_at")
-        if last_run:
-            return last_run
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r") as f:
+                    data = json.load(f)
+                    return data.get("last_run")
+            except (json.JSONDecodeError, IOError):
+                pass
         
-        # Default to 24 hours ago
-        yesterday = datetime.now(timezone.utc) - timedelta(days=1)
-        return yesterday.isoformat()
+        # Default to 24 hours ago if no state
+        return (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 
     def update_last_run(self):
-        """Updates the last run timestamp to the current time."""
-        now = datetime.now(timezone.utc).isoformat()
-        self.state["last_run_at"] = now
-        self._save_state()
-
-    def _save_state(self):
-        with open(self.filepath, "w") as f:
-            json.dump(self.state, f, indent=2)
+        """
+        Update the state file with the current UTC timestamp.
+        """
+        state = {
+            "last_run": datetime.now(timezone.utc).isoformat()
+        }
+        with open(self.state_file, "w") as f:
+            json.dump(state, f)

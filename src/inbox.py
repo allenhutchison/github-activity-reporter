@@ -9,6 +9,12 @@ from src.renderer import Renderer
 CONFIG_FILE = "config.yaml"
 
 def load_config():
+    """
+    Load the configuration from the YAML file.
+
+    Returns:
+        dict: The configuration dictionary, or empty if file not found.
+    """
     if not os.path.exists(CONFIG_FILE):
         # This might need to be adjusted if we move where config is loaded from
         print(f"Config file {CONFIG_FILE} not found.", file=sys.stderr)
@@ -17,6 +23,17 @@ def load_config():
         return yaml.safe_load(f)
 
 def run_inbox():
+    """
+    Execute the inbox check.
+
+    This function:
+    1. Loads configuration.
+    2. Initializes state and client.
+    3. Runs FullWatchStrategy (watched repos).
+    4. Runs MentionWatchStrategy (mentions).
+    5. Aggregates and renders items.
+    6. Updates the last run time in state.
+    """
     # 1. Setup
     config = load_config()
     state_manager = StateManager()

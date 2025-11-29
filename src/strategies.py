@@ -60,7 +60,18 @@ fragment DiscussionFields on Discussion {
 """
 
 class Strategy:
+    """
+    Base class for data fetching strategies.
+    """
     def __init__(self, client, config, last_run_at):
+        """
+        Initialize the strategy.
+
+        Args:
+            client (GitHubClient): The GitHub client.
+            config (dict): The configuration dictionary.
+            last_run_at (str): ISO 8601 timestamp of the last run.
+        """
         self.client = client
         self.config = config
         self.last_run_at = last_run_at
@@ -73,11 +84,15 @@ class Strategy:
         return item_dt > self.last_run_dt
 
     def run(self):
+        """Executes the strategy and returns a list of items."""
         raise NotImplementedError
 
 class FullWatchStrategy(Strategy):
     """
     Iterates through 'watch_all' repos and fetches recent activity.
+    
+    This strategy fetches recent issues, PRs, and discussions from the
+    configured repositories directly via the GraphQL API.
     """
     def run(self):
         repos = self.config.get("watch_all", [])
@@ -141,6 +156,9 @@ class FullWatchStrategy(Strategy):
 class MentionWatchStrategy(Strategy):
     """
     Uses Global Search to find mentions and updates in specific big repos.
+    
+    This strategy is useful for high-volume repositories where you only care
+    about items where you are mentioned or are the author.
     """
     def run(self):
         repos = self.config.get("watch_mentions", [])
