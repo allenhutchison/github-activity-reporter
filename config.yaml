@@ -1,0 +1,19 @@
+username: allenhutchison
+
+# Category 1: "Sole Maintainer" - Watch all activity (Issues, PRs, Discussions)
+watch_all:
+  - "allenhutchison/podcast-rag"
+  - "allenhutchison/obsidian-gemini"
+  - "gemini-cli-extensions/workspace"
+
+# Category 2: "Contributor" - Watch mentions, assignments, and updates to your own PRs/Issues
+watch_mentions:
+  - "google-gemini/gemini-cli"
+
+settings:
+  ignore_bots: true
+  output_format: "terminal"
+
+reporter:
+  gemini_model: "gemini-2.5-flash"
+  narrative: false
