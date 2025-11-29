@@ -205,7 +205,7 @@ class AuthoredActivityStrategy(ReportDataStrategy):
             # These need manual filtering for Author and Date
             for pr in repo_data.get("pullRequests", {}).get("nodes", []):
                 # Filter by Author
-                if pr["author"]["login"] != self.username:
+                if not pr.get("author") or pr["author"]["login"] != self.username:
                     continue
                     
                 # Filter by Date
@@ -277,7 +277,7 @@ class MaintainerActivityStrategy(ReportDataStrategy):
             # 1. Process PRs (Reviewed, Closed, Merged)
             for pr in repo_data.get("pullRequests", {}).get("nodes", []):
                 # Skip authored items
-                if pr["author"] and pr["author"]["login"] == self.username:
+                if pr.get("author") and pr["author"]["login"] == self.username:
                     continue
                 
                 # Check for Reviews
@@ -293,14 +293,6 @@ class MaintainerActivityStrategy(ReportDataStrategy):
                     for event in pr["timelineItems"]["nodes"]:
                         if event and "actor" in event and event["actor"] and event["actor"]["login"] == self.username:
                             if self._is_in_period(event["createdAt"]):
-                                # Determine type
-                                action_type = "merged" if "MergedEvent" in str(event) else "closed" 
-                                # (rudimentary check, or use __typename if available, but our fragment is explicit)
-                                # Actually let's check __typename if possible or infer
-                                # The fragment is: ... on ClosedEvent { ... } ... on MergedEvent { ... }
-                                # GraphQL returns the fields requested.
-                                # We can't easily distinguish without __typename, but we know if it was mergedAt set?
-                                # Let's infer from PR state + event presence
                                 results["prs_closed_merged"].append(pr)
                                 break
 

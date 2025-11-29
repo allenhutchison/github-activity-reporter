@@ -1,9 +1,7 @@
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
-from dateutil import parser
-
-STATE_FILE = "state.json"
 
 class StateManager:
     """
@@ -47,5 +45,8 @@ class StateManager:
         state = {
             "last_run": datetime.now(timezone.utc).isoformat()
         }
-        with open(self.state_file, "w") as f:
-            json.dump(state, f)
+        try:
+            with open(self.state_file, "w") as f:
+                json.dump(state, f)
+        except IOError as e:
+            print(f"Warning: Could not save state: {e}", file=sys.stderr)

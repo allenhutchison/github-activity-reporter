@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from dateutil import parser
 
 # Common fields we want to retrieve
@@ -75,8 +75,12 @@ class Strategy:
         self.client = client
         self.config = config
         self.last_run_at = last_run_at
-        # Convert ISO string to datetime object for comparison
-        self.last_run_dt = parser.isoparse(last_run_at)
+        
+        if last_run_at:
+            self.last_run_dt = parser.isoparse(last_run_at)
+        else:
+            # Default to epoch if no last run time
+            self.last_run_dt = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
     def _is_new(self, item_date_str):
         """Checks if an item was updated after the last run."""

@@ -47,7 +47,7 @@ class GitHubClient:
             payload["variables"] = variables
 
         try:
-            response = requests.post(GITHUB_GRAPHQL_URL, json=payload, headers=self.headers)
+            response = requests.post(GITHUB_GRAPHQL_URL, json=payload, headers=self.headers, timeout=30)
             response.raise_for_status()
             
             data = response.json()

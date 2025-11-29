@@ -58,16 +58,16 @@ class Renderer:
             context = ""
             if "comments" in item and item["comments"]["nodes"]:
                 last_comment = item["comments"]["nodes"][0]
-                author = last_comment["author"]["login"] if last_comment["author"] else "Unknown"
+                author = last_comment.get("author", {}).get("login", "Unknown")
                 context = f" [dim]Last comment by {author}[/dim]"
             elif "reviews" in item and item["reviews"]["nodes"]:
                  last_review = item["reviews"]["nodes"][0]
-                 author = last_review["author"]["login"] if last_review["author"] else "Unknown"
+                 author = last_review.get("author", {}).get("login", "Unknown")
                  context = f" [dim]Reviewed by {author}[/dim]"
             
             final_title = title_text + context
             
-            author_login = item['author']['login'] if item['author'] else "Bot"
+            author_login = item.get('author', {}).get('login', 'Bot')
             
             # Simple date formatting
             date_str = item['updatedAt'][:10]
